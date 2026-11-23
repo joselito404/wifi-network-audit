@@ -1,5 +1,7 @@
 # Wi-Fi Network Audit (Agent Skill)
 
+[![CI](https://github.com/joselito404/wifi-network-audit/actions/workflows/ci.yml/badge.svg)](https://github.com/joselito404/wifi-network-audit/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/joselito404/wifi-network-audit?label=Release)](https://github.com/joselito404/wifi-network-audit/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 [![Standard: Agent Skills](https://img.shields.io/badge/Standard-Agent%20Skills-green.svg)](SKILL.md)
 [![Platforms: Windows | macOS | Linux](https://img.shields.io/badge/Platforms-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey.svg)](#installation--usage)
@@ -7,6 +9,26 @@
 A cross-platform, read-only **Agent Skill** and sequential diagnostic toolkit for isolating Wi-Fi, USB adapter, RF channel, DNS, and bufferbloat bottlenecks — complete with guided router optimization and automated **Before vs. After** comparison reports.
 
 > **Credit:** Inspired by the sequential Wi-Fi diagnostic methodology originally shared by [`@brunovolpato`](https://x.com/brunovolpato).
+
+### Example Output (Before vs. After)
+
+| Metric | Before | After | Delta | Status |
+| :--- | :---: | :---: | :---: | :---: |
+| **USB Bus Speed** | `480 Mbps` (USB 2.0) | `5000 Mbps` (USB 3.0) | `+4520 Mbps` | Fixed |
+| **5 GHz Channel / Width** | `ch. 100 (DFS, 160 MHz)` | `ch. 36 (Non-DFS, 80 MHz)` | Non-DFS | Stabilized |
+| **Gateway Loaded RTT (p95)** | `68.4 ms` | `6.2 ms` | `-62.2 ms` | Fixed |
+| **Download Throughput** | `241 Mbps` | `584 Mbps` | `+343 Mbps` | Improved |
+| **DNS Uncached Lookup** | `94 ms` | `16 ms` | `-78 ms` | Fixed |
+
+*Full fictional anonymized report in [`examples/sample_before_after.md`](examples/sample_before_after.md).*
+
+---
+
+## Requirements
+
+- **Windows:** PowerShell `5.1+` or PowerShell `7+` (`pwsh`), `curl` (built into Windows 10/11)
+- **macOS / Linux:** `bash 3.2+`, `curl`
+- **Optional:** `python3` (`3.11+` recommended) for generating Markdown comparison tables locally with `scripts/format_report.py compare` (web AI users can skip Python and paste both JSON reports directly into the web prompt)
 
 ---
 
@@ -85,6 +107,20 @@ Then ask Codex: *"Use the wifi-network-audit skill to diagnose my slow Wi-Fi."*
 
 ### 4. ChatGPT / Claude.ai / Gemini Web (No Terminal Agent)
 
+**Option A — Without `git` (direct download):**
+Download the latest [Release ZIP](https://github.com/joselito404/wifi-network-audit/releases/latest) or fetch only the script for your OS:
+- **Windows (PowerShell):**
+  ```powershell
+  Invoke-WebRequest -Uri "https://raw.githubusercontent.com/joselito404/wifi-network-audit/main/scripts/audit_windows.ps1" -OutFile "audit_windows.ps1"
+  powershell -ExecutionPolicy Bypass -File .\audit_windows.ps1 -Format Json -OutFile before.json
+  ```
+- **macOS / Linux (Bash):**
+  ```bash
+  curl -fsSL "https://raw.githubusercontent.com/joselito404/wifi-network-audit/main/scripts/audit_unix.sh" -o audit_unix.sh
+  bash audit_unix.sh --format json --out before.json
+  ```
+
+**Option B — From a cloned repository:**
 1. Run the read-only audit script locally (output is anonymized by default):
    - **Windows (PowerShell):**
      ```powershell
@@ -94,8 +130,10 @@ Then ask Codex: *"Use the wifi-network-audit skill to diagnose my slow Wi-Fi."*
      ```bash
      bash scripts/audit_unix.sh --format json --out reports/before.json
      ```
-2. Copy the contents of [`prompts/web_analyzer_prompt.md`](prompts/web_analyzer_prompt.md) into ChatGPT, Claude.ai, or Gemini Web.
-3. Paste the contents of `reports/before.json` at the bottom of the prompt.
+
+**Then analyze in your browser:**
+1. Copy the contents of [`prompts/web_analyzer_prompt.md`](prompts/web_analyzer_prompt.md) into ChatGPT, Claude.ai, or Gemini Web.
+2. Paste the contents of `before.json` (or both `before.json` and `after.json` for an automatic Before vs. After table without Python) at the bottom of the prompt.
 
 ---
 

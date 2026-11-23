@@ -29,7 +29,11 @@ Use this rubric to isolate the true bottleneck layer from sequential audit telem
 
 - **Band:** Desktops and low-latency workloads should be on **5 GHz** or **6 GHz**, never 2.4 GHz (unless distance makes 5 GHz unusable `<= -78 dBm`).
 - **DFS Channels (5 GHz ch. 52–144):** If the router sits on a DFS channel and detects weather/airport radar, it must vacate the channel (causing 10–60s drops or silent fallback to 20 MHz / congested channels). Prefer non-DFS channels (`36–48` or `149–161`, depending on region) when stability matters.
-- **Channel Width:** `80 MHz` is the sweet spot on 5 GHz. `160 MHz` often overlaps DFS and increases interference; `20/40 MHz` caps peak throughput.
+- **Channel Width (5 GHz):** `80 MHz` is the sweet spot on 5 GHz. `160 MHz` often overlaps DFS and increases interference; `20/40 MHz` caps peak throughput.
+- **Wi-Fi 6E / 6 GHz:**
+  - **PSC (Preferred Scanning Channels):** 6 GHz clients discover APs fastest on PSC channels (`5, 21, 37, 53, 69, 85, 101, 117, 133, 149, 165, 181, 197, 213`). Non-PSC primary channels can cause slow discovery or fallback to 5 GHz.
+  - **Channel Width (`160 MHz` / `320 MHz`):** Unlike 5 GHz, `160 MHz` is clean and practical on 6 GHz (no DFS radar vacates); `320 MHz` (Wi-Fi 7) is viable in low-noise environments at short range, though 6 GHz attenuates faster through walls than 5 GHz.
+  - **Mandatory WPA3-SAE:** 6 GHz requires **WPA3-SAE** (and PMF) by specification; legacy WPA2-only clients cannot connect to 6 GHz, and misconfigured security modes can prevent 6 GHz association.
 
 ---
 

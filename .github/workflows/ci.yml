@@ -1,0 +1,54 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+
+jobs:
+  linux:
+    name: Linux (Python Tests + Bash Syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Python unit tests
+        run: python -B -m unittest discover -s tests -v
+
+      - name: Check Bash script syntax
+        run: bash -n scripts/audit_unix.sh
+
+  windows:
+    name: Windows (Python Tests + PowerShell AST)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Python unit tests
+        run: python -B -m unittest discover -s tests -v
+
+      - name: Parse PowerShell script AST
+        shell: pwsh
+        run: |
+          $scriptPath = (Resolve-Path 'scripts/audit_windows.ps1').Path
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors -and $errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.ToString() }
+            exit 1
+          }
+          Write-Host "PowerShell AST parse succeeded: $scriptPath"

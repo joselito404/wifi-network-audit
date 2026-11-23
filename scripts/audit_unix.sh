@@ -141,7 +141,10 @@ json_num_or_null() {
 
 is_preserved_ip() {
     local ip="${1:-}"
-    case "$ip" in
+    local ip_lc
+    ip_lc="$(printf '%s' "$ip" | tr '[:upper:]' '[:lower:]')"
+    ip_lc="${ip_lc%%%*}"
+    case "$ip_lc" in
         1.1.1.1|1.0.0.1|8.8.8.8|8.8.4.4|9.9.9.9|149.112.112.112|208.67.222.222|208.67.220.220)
             return 0 ;;
         10.*|192.168.*|127.*|169.254.*|0.*)
@@ -150,7 +153,9 @@ is_preserved_ip() {
             return 0 ;;
         100.6[4-9].*|100.[7-9][0-9].*|100.1[0-1][0-9].*|100.12[0-7].*)
             return 0 ;;
-        ::1|fe80:*|fc*|fd*)
+        ::|::1|0:0:0:0:0:0:0:1|0000:0000:0000:0000:0000:0000:0000:0001)
+            return 0 ;;
+        fe[89ab][0-9a-f]:*|fc[0-9a-f][0-9a-f]:*|fd[0-9a-f][0-9a-f]:*)
             return 0 ;;
     esac
     return 1
@@ -452,17 +457,56 @@ collect_macos() {
 }
 
 collect_linux() {
-    # Locate active wireless interface
+    # Locate active wireless interface (prioritize associated/UP interface when multiple exist)
+    local wifi_candidates=()
+    local cand=""
     if command -v iw >/dev/null 2>&1; then
-        WIFI_IFACE="$(iw dev 2>/dev/null | awk '$1=="Interface"{print $2; exit}')"
+        while IFS= read -r cand; do
+            [[ -n "$cand" ]] && wifi_candidates+=("$cand")
+        done < <(iw dev 2>/dev/null | awk '$1=="Interface"{print $2}' || true)
     fi
-    if [[ -z "$WIFI_IFACE" && -d /sys/class/net ]]; then
+    if [[ "${#wifi_candidates[@]}" -eq 0 && -d /sys/class/net ]]; then
         for d in /sys/class/net/*; do
             if [[ -d "$d/wireless" ]]; then
-                WIFI_IFACE="$(basename "$d")"
-                break
+                wifi_candidates+=("$(basename "$d")")
             fi
         done
+    fi
+
+    if [[ "${#wifi_candidates[@]}" -gt 0 ]]; then
+        # Priority 1: interface actively associated via iw link
+        if command -v iw >/dev/null 2>&1; then
+            for cand in "${wifi_candidates[@]}"; do
+                if iw dev "$cand" link 2>/dev/null | grep -q '^Connected to'; then
+                    WIFI_IFACE="$cand"
+                    break
+                fi
+            done
+        fi
+        # Priority 2: interface marked connected by nmcli
+        if [[ -z "$WIFI_IFACE" ]] && command -v nmcli >/dev/null 2>&1; then
+            local nm_iface
+            nm_iface="$(nmcli -t -f DEVICE,TYPE,STATE dev status 2>/dev/null | awk -F: '$2=="wifi" && $3=="connected"{print $1; exit}' || true)"
+            if [[ -n "$nm_iface" ]]; then
+                WIFI_IFACE="$nm_iface"
+            fi
+        fi
+        # Priority 3: interface with operstate up / state UP
+        if [[ -z "$WIFI_IFACE" ]]; then
+            for cand in "${wifi_candidates[@]}"; do
+                if [[ -r "/sys/class/net/$cand/operstate" && "$(cat "/sys/class/net/$cand/operstate" 2>/dev/null || true)" == "up" ]]; then
+                    WIFI_IFACE="$cand"
+                    break
+                elif command -v ip >/dev/null 2>&1 && ip link show "$cand" 2>/dev/null | grep -q 'state UP'; then
+                    WIFI_IFACE="$cand"
+                    break
+                fi
+            done
+        fi
+        # Priority 4: fallback to first detected wireless interface
+        if [[ -z "$WIFI_IFACE" ]]; then
+            WIFI_IFACE="${wifi_candidates[0]}"
+        fi
     fi
     WIFI_DESC="Linux Wi-Fi (${WIFI_IFACE:-none})"
 
@@ -722,7 +766,8 @@ stop_bg_ping_stats() {
     compute_ping_stats_json "$samples_file" "$sent"
 }
 
-LOAD_TEST_JSON='{"skipped":true,"tool":null,"download":null,"upload":null}'
+LOAD_ERROR=""
+LOAD_TEST_JSON='{"skipped":true,"tool":null,"load_error":null,"download":null,"upload":null}'
 
 if [[ "$SKIP_LOAD" -eq 0 ]]; then
     BASE_GW_AVG="$(extract_avg_ms "$GW_BASELINE_JSON")"
@@ -736,66 +781,98 @@ if [[ "$SKIP_LOAD" -eq 0 ]]; then
         LOAD_TOOL="networkQuality + curl + ping"
     fi
 
-    # Phase 1: Download 100 MB (or iperf3 on Linux if IPERF3_SERVER is set)
-    DL_GW_RAW="$TMP_DIR/dl_gw.txt"
-    DL_WAN_RAW="$TMP_DIR/dl_wan.txt"
-    PID_GW="$(run_bg_ping "$GATEWAY_IP" "$DL_GW_RAW")"
-    PID_WAN="$(run_bg_ping "$WAN_TARGET" "$DL_WAN_RAW")"
-
-    DL_BYTES=0; DL_SEC=0; DL_MBPS="null"
+    USE_IPERF3=0
     if [[ "$PLATFORM" == "linux" && -n "${IPERF3_SERVER:-}" ]] && command -v iperf3 >/dev/null 2>&1; then
-        LOAD_TOOL="iperf3 + ping"
-        iperf_dl="$(iperf3 -c "$IPERF3_SERVER" -R -t 6 -J 2>/dev/null || true)"
-        DL_MBPS="$(printf '%s' "$iperf_dl" | awk '/"bits_per_second"/{val=$2} END{gsub(/,/,"",val); if (val+0>0) printf "%.2f", (val+0)/1e6; else print "null"}')"
-    elif command -v curl >/dev/null 2>&1; then
-        curl_dl="$(curl -sS -L -o /dev/null -A "$UA" -H "Referer: $REFERER" --max-time 60 \
-            -w '%{size_download}|%{time_total}' 'https://speed.cloudflare.com/__down?bytes=104857600' 2>/dev/null || true)"
-        DL_BYTES="$(printf '%s' "$curl_dl" | cut -d'|' -f1)"
-        DL_SEC="$(printf '%s' "$curl_dl" | cut -d'|' -f2)"
-        if [[ "$DL_BYTES" =~ ^[0-9]+$ && "$DL_SEC" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( DL_BYTES > 0 )); then
-            DL_MBPS="$(awk -v b="$DL_BYTES" -v s="$DL_SEC" 'BEGIN { if (s > 0) printf "%.2f", (b * 8.0 / s) / 1000000.0; else print "null" }')"
-        fi
+        USE_IPERF3=1
+    fi
+    HAS_CURL=0
+    if command -v curl >/dev/null 2>&1; then
+        HAS_CURL=1
     fi
 
-    DL_GW_STATS="$(stop_bg_ping_stats "$PID_GW" "$DL_GW_RAW")"
-    DL_WAN_STATS="$(stop_bg_ping_stats "$PID_WAN" "$DL_WAN_RAW")"
-    DL_GW_BLOAT="$(calc_delta_json "$(extract_avg_ms "$DL_GW_STATS")" "$BASE_GW_AVG")"
-    DL_WAN_BLOAT="$(calc_delta_json "$(extract_avg_ms "$DL_WAN_STATS")" "$BASE_WAN_AVG")"
-
-    # 2-second drain pause between Download and Upload phases
-    sleep 2
-
-    # Phase 2: Upload 25 MB in-memory stream
-    UL_GW_RAW="$TMP_DIR/ul_gw.txt"
-    UL_WAN_RAW="$TMP_DIR/ul_wan.txt"
-    PID_GW="$(run_bg_ping "$GATEWAY_IP" "$UL_GW_RAW")"
-    PID_WAN="$(run_bg_ping "$WAN_TARGET" "$UL_WAN_RAW")"
-
-    UL_BYTES=26214400; UL_SEC=0; UL_MBPS="null"
-    if [[ "$PLATFORM" == "linux" && -n "${IPERF3_SERVER:-}" ]] && command -v iperf3 >/dev/null 2>&1; then
-        iperf_ul="$(iperf3 -c "$IPERF3_SERVER" -t 6 -J 2>/dev/null || true)"
-        UL_MBPS="$(printf '%s' "$iperf_ul" | awk '/"bits_per_second"/{val=$2} END{gsub(/,/,"",val); if (val+0>0) printf "%.2f", (val+0)/1e6; else print "null"}')"
-    elif command -v curl >/dev/null 2>&1; then
-        curl_ul="$(head -c 26214400 /dev/zero | curl -sS -X POST -o /dev/null \
-            -A "$UA" -H "Referer: $REFERER" -H "Content-Type: application/octet-stream" \
-            --data-binary @- --max-time 60 \
-            -w '%{size_upload}|%{time_total}' 'https://speed.cloudflare.com/__up' 2>/dev/null || true)"
-        UL_BYTES="$(printf '%s' "$curl_ul" | cut -d'|' -f1)"
-        UL_SEC="$(printf '%s' "$curl_ul" | cut -d'|' -f2)"
-        if [[ "$UL_BYTES" =~ ^[0-9]+$ && "$UL_SEC" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( UL_BYTES > 0 )); then
-            UL_MBPS="$(awk -v b="$UL_BYTES" -v s="$UL_SEC" 'BEGIN { if (s > 0) printf "%.2f", (b * 8.0 / s) / 1000000.0; else print "null" }')"
+    if [[ "$USE_IPERF3" -eq 0 && "$HAS_CURL" -eq 0 ]]; then
+        LOAD_ERROR="curl not installed; throughput/bufferbloat skipped"
+        if [[ -n "$NQ_SUMMARY" ]]; then
+            LOAD_TOOL="networkQuality"
+        else
+            LOAD_TOOL=""
         fi
-    fi
+        DL_MBPS="null"; UL_MBPS="null"
+        DL_GW_BLOAT="null"; DL_WAN_BLOAT="null"
+        UL_GW_BLOAT="null"; UL_WAN_BLOAT="null"
+        LOAD_TEST_JSON="$(cat <<EOF
+{
+    "skipped": true,
+    "tool": $(json_str_or_null "$LOAD_TOOL"),
+    "load_error": "$(json_escape "$LOAD_ERROR")",
+    "network_quality_note": $(json_str_or_null "$NQ_SUMMARY"),
+    "download": null,
+    "upload": null
+  }
+EOF
+)"
+    else
+        # Phase 1: Download 100 MB (or iperf3 on Linux if IPERF3_SERVER is set)
+        DL_GW_RAW="$TMP_DIR/dl_gw.txt"
+        DL_WAN_RAW="$TMP_DIR/dl_wan.txt"
+        PID_GW="$(run_bg_ping "$GATEWAY_IP" "$DL_GW_RAW")"
+        PID_WAN="$(run_bg_ping "$WAN_TARGET" "$DL_WAN_RAW")"
 
-    UL_GW_STATS="$(stop_bg_ping_stats "$PID_GW" "$UL_GW_RAW")"
-    UL_WAN_STATS="$(stop_bg_ping_stats "$PID_WAN" "$UL_WAN_RAW")"
-    UL_GW_BLOAT="$(calc_delta_json "$(extract_avg_ms "$UL_GW_STATS")" "$BASE_GW_AVG")"
-    UL_WAN_BLOAT="$(calc_delta_json "$(extract_avg_ms "$UL_WAN_STATS")" "$BASE_WAN_AVG")"
+        DL_BYTES=0; DL_SEC=0; DL_MBPS="null"
+        if [[ "$USE_IPERF3" -eq 1 ]]; then
+            LOAD_TOOL="iperf3 + ping"
+            iperf_dl="$(iperf3 -c "$IPERF3_SERVER" -R -t 6 -J 2>/dev/null || true)"
+            DL_MBPS="$(printf '%s' "$iperf_dl" | awk '/"bits_per_second"/{val=$2} END{gsub(/,/,"",val); if (val+0>0) printf "%.2f", (val+0)/1e6; else print "null"}')"
+        elif [[ "$HAS_CURL" -eq 1 ]]; then
+            curl_dl="$(curl -sS -L -o /dev/null -A "$UA" -H "Referer: $REFERER" --max-time 60 \
+                -w '%{size_download}|%{time_total}' 'https://speed.cloudflare.com/__down?bytes=104857600' 2>/dev/null || true)"
+            DL_BYTES="$(printf '%s' "$curl_dl" | cut -d'|' -f1)"
+            DL_SEC="$(printf '%s' "$curl_dl" | cut -d'|' -f2)"
+            if [[ "$DL_BYTES" =~ ^[0-9]+$ && "$DL_SEC" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( DL_BYTES > 0 )); then
+                DL_MBPS="$(awk -v b="$DL_BYTES" -v s="$DL_SEC" 'BEGIN { if (s > 0) printf "%.2f", (b * 8.0 / s) / 1000000.0; else print "null" }')"
+            fi
+        fi
 
-    LOAD_TEST_JSON="$(cat <<EOF
+        DL_GW_STATS="$(stop_bg_ping_stats "$PID_GW" "$DL_GW_RAW")"
+        DL_WAN_STATS="$(stop_bg_ping_stats "$PID_WAN" "$DL_WAN_RAW")"
+        DL_GW_BLOAT="$(calc_delta_json "$(extract_avg_ms "$DL_GW_STATS")" "$BASE_GW_AVG")"
+        DL_WAN_BLOAT="$(calc_delta_json "$(extract_avg_ms "$DL_WAN_STATS")" "$BASE_WAN_AVG")"
+
+        # 2-second drain pause between Download and Upload phases
+        sleep 2
+
+        # Phase 2: Upload 25 MB in-memory stream
+        UL_GW_RAW="$TMP_DIR/ul_gw.txt"
+        UL_WAN_RAW="$TMP_DIR/ul_wan.txt"
+        PID_GW="$(run_bg_ping "$GATEWAY_IP" "$UL_GW_RAW")"
+        PID_WAN="$(run_bg_ping "$WAN_TARGET" "$UL_WAN_RAW")"
+
+        UL_BYTES=26214400; UL_SEC=0; UL_MBPS="null"
+        if [[ "$USE_IPERF3" -eq 1 ]]; then
+            iperf_ul="$(iperf3 -c "$IPERF3_SERVER" -t 6 -J 2>/dev/null || true)"
+            UL_MBPS="$(printf '%s' "$iperf_ul" | awk '/"bits_per_second"/{val=$2} END{gsub(/,/,"",val); if (val+0>0) printf "%.2f", (val+0)/1e6; else print "null"}')"
+        elif [[ "$HAS_CURL" -eq 1 ]]; then
+            curl_ul="$(head -c 26214400 /dev/zero | curl -sS -X POST -o /dev/null \
+                -A "$UA" -H "Referer: $REFERER" -H "Content-Type: application/octet-stream" \
+                --data-binary @- --max-time 60 \
+                -w '%{size_upload}|%{time_total}' 'https://speed.cloudflare.com/__up' 2>/dev/null || true)"
+            UL_BYTES="$(printf '%s' "$curl_ul" | cut -d'|' -f1)"
+            UL_SEC="$(printf '%s' "$curl_ul" | cut -d'|' -f2)"
+            if [[ "$UL_BYTES" =~ ^[0-9]+$ && "$UL_SEC" =~ ^[0-9]+(\.[0-9]+)?$ ]] && (( UL_BYTES > 0 )); then
+                UL_MBPS="$(awk -v b="$UL_BYTES" -v s="$UL_SEC" 'BEGIN { if (s > 0) printf "%.2f", (b * 8.0 / s) / 1000000.0; else print "null" }')"
+            fi
+        fi
+
+        UL_GW_STATS="$(stop_bg_ping_stats "$PID_GW" "$UL_GW_RAW")"
+        UL_WAN_STATS="$(stop_bg_ping_stats "$PID_WAN" "$UL_WAN_RAW")"
+        UL_GW_BLOAT="$(calc_delta_json "$(extract_avg_ms "$UL_GW_STATS")" "$BASE_GW_AVG")"
+        UL_WAN_BLOAT="$(calc_delta_json "$(extract_avg_ms "$UL_WAN_STATS")" "$BASE_WAN_AVG")"
+
+        LOAD_TEST_JSON="$(cat <<EOF
 {
     "skipped": false,
     "tool": "$(json_escape "$LOAD_TOOL")",
+    "load_error": $(json_str_or_null "$LOAD_ERROR"),
     "network_quality_note": $(json_str_or_null "$NQ_SUMMARY"),
     "download": {
       "bytes": $(json_num_or_null "$DL_BYTES"),
@@ -818,6 +895,7 @@ if [[ "$SKIP_LOAD" -eq 0 ]]; then
   }
 EOF
 )"
+    fi
 fi
 
 # ============================================================================
@@ -952,6 +1030,8 @@ else
 EOF
     if [[ "$SKIP_LOAD" -eq 1 ]]; then
         echo "_Skipped (\`--skip-load\`)._"
+    elif [[ -n "${LOAD_ERROR:-}" ]]; then
+        echo "_Skipped (${LOAD_ERROR})._"
     else
         cat <<EOF
 - **Tool:** $LOAD_TOOL

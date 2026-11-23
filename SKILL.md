@@ -16,15 +16,17 @@ description: Audits Wi-Fi and local network performance sequentially across Wind
 
 ## Step 1: Collect Baseline Telemetry (Before)
 
-Detect the host OS and run the corresponding read-only audit script sequentially, saving the JSON report under `reports/before.json`.
+> **Path Resolution:** All `scripts/` and `references/` paths in this skill (`scripts/audit_windows.ps1`, `scripts/audit_unix.sh`, `scripts/format_report.py`, and `references/*.md`) are relative to the **skill's own directory** (where `SKILL.md` resides) — **not** the user's current workspace. When installed globally (e.g., `~/.gemini/antigravity/skills/wifi-network-audit/`, `~/.claude/skills/wifi-network-audit/`, or `~/.codex/skills/wifi-network-audit/`), resolve those paths from the skill directory while saving output reports (`reports/before.json`, `reports/after.json`, `reports/comparison.md`) in the user's working directory (or a writable `reports/` folder).
+
+Detect the host OS and run the corresponding read-only audit script sequentially, saving the JSON report under `reports/before.json` (replace `<SKILL_DIR>` with the directory containing this `SKILL.md` when running from another workspace):
 
 - **Windows (PowerShell):**
   ```powershell
-  powershell -ExecutionPolicy Bypass -File scripts/audit_windows.ps1 -Format Json -OutFile reports/before.json
+  powershell -ExecutionPolicy Bypass -File "<SKILL_DIR>/scripts/audit_windows.ps1" -Format Json -OutFile reports/before.json
   ```
 - **macOS / Linux (Bash):**
   ```bash
-  bash scripts/audit_unix.sh --format json --out reports/before.json
+  bash "<SKILL_DIR>/scripts/audit_unix.sh" --format json --out reports/before.json
   ```
 
 Wait for the script to finish completely before reading `reports/before.json`.
@@ -59,11 +61,11 @@ If the diagnosis points to router settings (channel, width, band steering, QoS/S
 
 After the user applies the approved changes:
 
-1. Run the exact same audit script sequentially to capture `reports/after.json`:
-   - Windows: `powershell -ExecutionPolicy Bypass -File scripts/audit_windows.ps1 -Format Json -OutFile reports/after.json`
-   - macOS / Linux: `bash scripts/audit_unix.sh --format json --out reports/after.json`
+1. Run the exact same audit script sequentially (resolved from `<SKILL_DIR>`, where `SKILL.md` resides) to capture `reports/after.json`:
+   - Windows: `powershell -ExecutionPolicy Bypass -File "<SKILL_DIR>/scripts/audit_windows.ps1" -Format Json -OutFile reports/after.json`
+   - macOS / Linux: `bash "<SKILL_DIR>/scripts/audit_unix.sh" --format json --out reports/after.json`
 2. Generate the formatted comparison report:
    ```bash
-   python scripts/format_report.py compare reports/before.json reports/after.json --out reports/comparison.md
+   python "<SKILL_DIR>/scripts/format_report.py" compare reports/before.json reports/after.json --out reports/comparison.md
    ```
 3. Present the Before vs. After Markdown table, highlight verified gains, and note any remaining bottlenecks or external ISP limits that cannot be solved locally.

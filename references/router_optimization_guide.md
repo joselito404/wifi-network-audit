@@ -22,11 +22,15 @@ Use this guide after identifying RF, channel, or WAN bufferbloat issues in the b
 
 ---
 
-## 3. Channel Width (5 GHz)
+## 3. Channel Width (5 GHz & 6 GHz)
 
-- **80 MHz (Recommended default):** Best balance of throughput (866–1200+ Mbps PHY) and interference resistance.
-- **40 MHz:** Use only in extremely dense apartment buildings where 80 MHz causes constant jitter.
-- **160 MHz:** Avoid unless you have a clean RF environment and Wi-Fi 6/6E clients; it forces DFS overlap in most regions.
+- **5 GHz — 80 MHz (Recommended default):** Best balance of throughput (866–1200+ Mbps PHY) and interference resistance.
+- **5 GHz — 40 MHz:** Use only in extremely dense apartment buildings where 80 MHz causes constant jitter.
+- **5 GHz — 160 MHz:** Avoid unless you have a clean RF environment and Wi-Fi 6/6E clients; it forces DFS overlap in most regions.
+- **Wi-Fi 6E / 6 GHz (if supported by router and client):**
+  - **Channels:** Always pick a **PSC (Preferred Scanning Channel)** such as `37`, `53`, `69`, or `85` so clients discover the 6 GHz band reliably without falling back to 5 GHz.
+  - **Width:** `160 MHz` is the standard sweet spot on 6 GHz (no DFS radar interference); `320 MHz` (Wi-Fi 7) is optional for short-range line-of-sight setups.
+  - **Security:** **WPA3-SAE** is mandatory on 6 GHz — do not disable WPA3 on the 6 GHz SSID.
 
 ---
 

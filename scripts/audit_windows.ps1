@@ -248,6 +248,21 @@ function Get-BandFromChannel {
 # ============================================================================
 
 function Get-WifiLinkAudit {
+    # Locate active Wi-Fi adapter via CIM/NetAdapter (locale-independent)
+    $wifiAdapters = @()
+    $activeWifiAdapter = $null
+    try {
+        $wifiAdapters = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object {
+            $_.MediaType -match '802\.11' -or
+            $_.PhysicalMediaType -match '802\.11' -or
+            $_.NdisPhysicalMedium -eq 9
+        })
+        $activeWifiAdapter = $wifiAdapters | Where-Object { $_.Status -eq 'Up' } | Select-Object -First 1
+        if (-not $activeWifiAdapter) {
+            $activeWifiAdapter = $wifiAdapters | Select-Object -First 1
+        }
+    } catch { }
+
     $rawLines = @()
     try {
         $rawLines = & netsh wlan show interfaces 2>&1
@@ -255,44 +270,158 @@ function Get-WifiLinkAudit {
         $rawLines = @()
     }
 
-    $ifaceName = $null
-    $description = $null
-    $state = $null
-    $ssid = $null
-    $bssid = $null
-    $rawBand = $null
-    $channel = $null
-    $radioType = $null
-    $signalPct = $null
-    $rxRate = $null
-    $txRate = $null
-
+    # Split netsh output into per-interface blocks so multiple Wi-Fi adapters never mix fields
+    $rawBlocks = New-Object System.Collections.Generic.List[object]
+    $currentBlock = New-Object System.Collections.Generic.List[string]
     foreach ($line in $rawLines) {
         $s = [string]$line
-        if ($s -match '^\s*(Name|Nombre)\s*:\s*(.+)$' -and -not $ifaceName) {
-            $ifaceName = $Matches[2].Trim()
-        } elseif ($s -match '^\s*(Description|Descripci[oó]n)\s*:\s*(.+)$' -and -not $description) {
-            $description = $Matches[2].Trim()
-        } elseif ($s -match '^\s*(State|Estado)\s*:\s*(.+)$' -and -not $state) {
-            $state = $Matches[2].Trim()
-        } elseif ($s -match '^\s*SSID\s*:\s*(.+)$' -and -not $ssid) {
-            $ssid = $Matches[1].Trim()
-        } elseif ($s -match '^\s*(AP\s+)?BSSID\s*:\s*([0-9a-fA-F:.-]+)$' -and -not $bssid) {
-            $bssid = $Matches[2].Trim()
-        } elseif ($s -match '^\s*(Band|Banda)\s*:\s*(.+)$' -and -not $rawBand) {
-            $rawBand = $Matches[2].Trim()
-        } elseif ($s -match '^\s*(Channel|Canal)\s*:\s*(\d+)' -and $null -eq $channel) {
-            $channel = [int]$Matches[2]
-        } elseif ($s -match '^\s*(Radio type|Tipo de radio)\s*:\s*(.+)$' -and -not $radioType) {
-            $radioType = $Matches[2].Trim()
-        } elseif ($s -match '^\s*(Signal|Se[nñ]al)\s*:\s*(\d+)\s*%' -and $null -eq $signalPct) {
-            $signalPct = [int]$Matches[2]
-        } elseif ($s -match '^\s*(Receive rate|Velocidad de recepci[oó]n).*:\s*([\d.,]+)' -and $null -eq $rxRate) {
-            $rxRate = [double]($Matches[2] -replace ',', '.')
-        } elseif ($s -match '^\s*(Transmit rate|Velocidad de transmisi[oó]n).*:\s*([\d.,]+)' -and $null -eq $txRate) {
-            $txRate = [double]($Matches[2] -replace ',', '.')
+        if ([string]::IsNullOrWhiteSpace($s)) {
+            if ($currentBlock.Count -gt 0) {
+                $rawBlocks.Add(@($currentBlock))
+                $currentBlock = New-Object System.Collections.Generic.List[string]
+            }
+            continue
         }
+        # Start a new block if a Name/Nombre header repeats without a separating blank line
+        if ($s -match '^\s*(Name|Nombre|Nom|Nome|Naam|Nazwa)\s*:\s*(.+)$' -and $currentBlock.Count -gt 0) {
+            if (@($currentBlock | Where-Object { $_ -match '^\s*(Name|Nombre|Nom|Nome|Naam|Nazwa)\s*:' }).Count -gt 0) {
+                $rawBlocks.Add(@($currentBlock))
+                $currentBlock = New-Object System.Collections.Generic.List[string]
+            }
+        }
+        $currentBlock.Add($s)
     }
+    if ($currentBlock.Count -gt 0) {
+        $rawBlocks.Add(@($currentBlock))
+    }
+
+    $parsedBlocks = New-Object System.Collections.Generic.List[object]
+    foreach ($blockLines in $rawBlocks) {
+        # Skip header-only blocks (e.g. "There are 2 interfaces on the system:")
+        $kvCount = @($blockLines | Where-Object { $_ -match '^\s*[^:]+:\s*.+$' }).Count
+        if ($kvCount -lt 2) { continue }
+
+        $bIfaceName = $null
+        $bDesc = $null
+        $bState = $null
+        $bSsid = $null
+        $bBssid = $null
+        $bRawBand = $null
+        $bChannel = $null
+        $bRadioType = $null
+        $bSignalPct = $null
+        $bRxRate = $null
+        $bTxRate = $null
+        $bRawValues = New-Object System.Collections.Generic.List[string]
+
+        foreach ($s in $blockLines) {
+            if ($s -match '^\s*[^:]+:\s*(.+)$') {
+                $bRawValues.Add($Matches[1].Trim())
+            }
+            if ($s -match '^\s*(Name|Nombre|Nom|Nome|Naam|Nazwa)\s*:\s*(.+)$' -and -not $bIfaceName) {
+                $bIfaceName = $Matches[2].Trim()
+            } elseif ($s -match '^\s*(Description|Descripci.{1,2}n|Beschreibung|Descrizione)\s*:\s*(.+)$' -and -not $bDesc) {
+                $bDesc = $Matches[2].Trim()
+            } elseif ($s -match '^\s*(State|Estado|[EÉ]tat|Status|Stato)\s*:\s*(.+)$' -and -not $bState) {
+                $bState = $Matches[2].Trim()
+            } elseif ($s -match '^\s*SSID\s*:\s*(.+)$' -and -not $bSsid) {
+                $bSsid = $Matches[1].Trim()
+            } elseif ($s -match '^\s*(AP\s+)?BSSID\s*:\s*([0-9a-fA-F:.-]+)$' -and -not $bBssid) {
+                $bBssid = $Matches[2].Trim()
+            } elseif ($s -match '^\s*(Band|Banda|Bande|Frequenzband)\s*:\s*(.+)$' -and -not $bRawBand) {
+                $bRawBand = $Matches[2].Trim()
+            } elseif ($s -match '^\s*(Channel|Canal|Kanal|Canale)\s*:\s*(\d+)' -and $null -eq $bChannel) {
+                $bChannel = [int]$Matches[2]
+            } elseif ($s -match '^\s*(Radio type|Tipo de radio|Type de radio|Funktyp|Tipo radio)\s*:\s*(.+)$' -and -not $bRadioType) {
+                $bRadioType = $Matches[2].Trim()
+            } elseif ($s -match '^\s*(Signal|Se.{1,2}al|Segnale)\s*:\s*(\d+)\s*%' -and $null -eq $bSignalPct) {
+                $bSignalPct = [int]$Matches[2]
+            } elseif ($s -match '^\s*(Receive rate|Velocidad de recepci.{1,2}n|Vitesse de r.{1,2}ception|Empfangsrate).*:\s*([\d.,]+)' -and $null -eq $bRxRate) {
+                $bRxRate = [double]($Matches[2] -replace ',', '.')
+            } elseif ($s -match '^\s*(Transmit rate|Velocidad de transmisi.{1,2}n|Vitesse de transmission|[UÜ]bertragungsrate).*:\s*([\d.,]+)' -and $null -eq $bTxRate) {
+                $bTxRate = [double]($Matches[2] -replace ',', '.')
+            }
+        }
+
+        # Locale-agnostic value fallbacks inside this single block
+        if (-not $bRadioType) {
+            foreach ($s in $blockLines) {
+                if ($s -match ':\s*(802\.11[a-zA-Z0-9/]+)\s*$') {
+                    $bRadioType = $Matches[1].Trim()
+                    break
+                }
+            }
+        }
+        if ($null -eq $bSignalPct) {
+            foreach ($s in $blockLines) {
+                if ($s -match ':\s*(\d{1,3})\s*%\s*$') {
+                    $bSignalPct = [int]$Matches[1]
+                    break
+                }
+            }
+        }
+
+        $isConnected = (
+            ($bState -and $bState -match '^(connected|conectado|connect.{1,2}|verbunden|connesso)\b') -or
+            (-not [string]::IsNullOrWhiteSpace($bBssid)) -or
+            (-not [string]::IsNullOrWhiteSpace($bSsid))
+        )
+        $matchesActiveAdapter = $false
+        if ($activeWifiAdapter) {
+            $matchesActiveAdapter = (
+                ($bIfaceName -and $bIfaceName -eq $activeWifiAdapter.Name) -or
+                ($bDesc -and $bDesc -eq $activeWifiAdapter.InterfaceDescription) -or
+                ($bRawValues -contains $activeWifiAdapter.Name) -or
+                ($bRawValues -contains $activeWifiAdapter.InterfaceDescription)
+            )
+        }
+
+        $parsedBlocks.Add([pscustomobject]@{
+            interface_name        = $bIfaceName
+            description           = $bDesc
+            state                 = $bState
+            ssid                  = $bSsid
+            bssid                 = $bBssid
+            raw_band              = $bRawBand
+            channel               = $bChannel
+            radio_type            = $bRadioType
+            signal_percent        = $bSignalPct
+            receive_rate_mbps     = $bRxRate
+            transmit_rate_mbps    = $bTxRate
+            is_connected          = $isConnected
+            matches_active_adapter = $matchesActiveAdapter
+        })
+    }
+
+    # Prioritize: active NetAdapter + connected -> connected -> active NetAdapter -> first block
+    $selectedBlock = $parsedBlocks | Where-Object { $_.matches_active_adapter -and $_.is_connected } | Select-Object -First 1
+    if (-not $selectedBlock) {
+        $selectedBlock = $parsedBlocks | Where-Object { $_.is_connected } | Select-Object -First 1
+    }
+    if (-not $selectedBlock) {
+        $selectedBlock = $parsedBlocks | Where-Object { $_.matches_active_adapter } | Select-Object -First 1
+    }
+    if (-not $selectedBlock) {
+        $selectedBlock = $parsedBlocks | Select-Object -First 1
+    }
+
+    $ifaceName = if ($selectedBlock -and $selectedBlock.interface_name) { $selectedBlock.interface_name } elseif ($activeWifiAdapter) { $activeWifiAdapter.Name } else { $null }
+    $description = if ($selectedBlock -and $selectedBlock.description) { $selectedBlock.description } elseif ($activeWifiAdapter) { $activeWifiAdapter.InterfaceDescription } else { $null }
+    $state = if ($selectedBlock -and $selectedBlock.state) {
+        $selectedBlock.state
+    } elseif ($activeWifiAdapter) {
+        if ($activeWifiAdapter.Status -eq 'Up') { 'connected' } else { [string]$activeWifiAdapter.Status }
+    } else {
+        $null
+    }
+    $ssid = if ($selectedBlock) { $selectedBlock.ssid } else { $null }
+    $bssid = if ($selectedBlock) { $selectedBlock.bssid } else { $null }
+    $rawBand = if ($selectedBlock) { $selectedBlock.raw_band } else { $null }
+    $channel = if ($selectedBlock) { $selectedBlock.channel } else { $null }
+    $radioType = if ($selectedBlock) { $selectedBlock.radio_type } else { $null }
+    $signalPct = if ($selectedBlock) { $selectedBlock.signal_percent } else { $null }
+    $rxRate = if ($selectedBlock) { $selectedBlock.receive_rate_mbps } else { $null }
+    $txRate = if ($selectedBlock) { $selectedBlock.transmit_rate_mbps } else { $null }
 
     $band = if ($null -ne $channel) {
         Get-BandFromChannel -Channel $channel -RawBand ([string]$rawBand)
@@ -301,35 +430,58 @@ function Get-WifiLinkAudit {
     }
     $isDfs = if ($null -ne $channel) { Test-IsDfsChannel -Channel $channel } else { $false }
 
-    # Interface error statistics via WMI/CIM + netstat -e
+    # Interface error statistics via locale-independent Get-NetAdapterStatistics, with CIM fallback
     $rxErr = $null; $rxDisc = $null; $txErr = $null; $txDisc = $null
-    try {
-        $perfAll = Get-CimInstance -ClassName Win32_PerfRawData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue
-        if ($perfAll -and $description) {
-            # WMI replaces ()/# with []/_ in Name
-            $normDesc = ($description -replace '[()/\\#]', '_')
-            $matched = $perfAll | Where-Object {
-                $_.Name -eq $description -or $_.Name -eq $normDesc -or $_.Name -like "*$($description.Substring(0, [math]::Min(16, $description.Length)))*"
-            } | Select-Object -First 1
-            if ($matched) {
-                $rxErr = [int64]$matched.PacketsReceivedErrors
-                $rxDisc = [int64]$matched.PacketsReceivedDiscarded
-                $txErr = [int64]$matched.PacketsOutboundErrors
-                $txDisc = [int64]$matched.PacketsOutboundDiscarded
+    if ($ifaceName) {
+        try {
+            $adapterStats = Get-NetAdapterStatistics -Name $ifaceName -ErrorAction SilentlyContinue
+            if ($adapterStats) {
+                if ($null -ne $adapterStats.ReceivedPacketErrors) { $rxErr = [int64]$adapterStats.ReceivedPacketErrors }
+                if ($null -ne $adapterStats.ReceivedDiscardedPackets) { $rxDisc = [int64]$adapterStats.ReceivedDiscardedPackets }
+                if ($null -ne $adapterStats.OutboundPacketErrors) { $txErr = [int64]$adapterStats.OutboundPacketErrors }
+                if ($null -ne $adapterStats.OutboundDiscardedPackets) { $txDisc = [int64]$adapterStats.OutboundDiscardedPackets }
             }
-        }
-    } catch { }
+        } catch { }
+    }
+
+    if ($null -eq $rxErr -and $null -eq $txErr) {
+        try {
+            $perfAll = Get-CimInstance -ClassName Win32_PerfRawData_Tcpip_NetworkInterface -ErrorAction SilentlyContinue
+            if ($perfAll -and $description) {
+                # WMI replaces ()/# with []/_ in Name
+                $normDesc = ($description -replace '[()/\\#]', '_')
+                $matched = $perfAll | Where-Object {
+                    $_.Name -eq $description -or $_.Name -eq $normDesc -or $_.Name -like "*$($description.Substring(0, [math]::Min(16, $description.Length)))*"
+                } | Select-Object -First 1
+                if ($matched) {
+                    $rxErr = [int64]$matched.PacketsReceivedErrors
+                    $rxDisc = [int64]$matched.PacketsReceivedDiscarded
+                    $txErr = [int64]$matched.PacketsOutboundErrors
+                    $txDisc = [int64]$matched.PacketsOutboundDiscarded
+                }
+            }
+        } catch { }
+    }
 
     $netstatRxErr = $null; $netstatTxErr = $null
     try {
         $nsLines = & netstat -e 2>&1
+        $nsTwoColRows = New-Object System.Collections.Generic.List[object]
         foreach ($nl in $nsLines) {
             $ns = [string]$nl
-            if ($ns -match '^\s*(Errors|Errores)\s+(\d+)\s+(\d+)') {
+            if ($ns -match '^\s*(Errors|Errores|Erreurs|Fehler|Errori)\s+(\d+)\s+(\d+)') {
                 $netstatRxErr = [int64]$Matches[2]
                 $netstatTxErr = [int64]$Matches[3]
                 break
             }
+            if ($ns -match '^\s*[^\d\s].*?\s+(\d+)\s+(\d+)\s*$') {
+                $nsTwoColRows.Add(@([int64]$Matches[1], [int64]$Matches[2]))
+            }
+        }
+        # Locale-agnostic fallback: in netstat -e, the 5th two-column counter row (index 4) is Errors
+        if ($null -eq $netstatRxErr -and $nsTwoColRows.Count -ge 5) {
+            $netstatRxErr = $nsTwoColRows[4][0]
+            $netstatTxErr = $nsTwoColRows[4][1]
         }
     } catch { }
 
@@ -416,11 +568,11 @@ function Get-RfScanAudit {
             & $flushEntry
             $currentBssid = $Matches[1].Trim()
             $currentSignal = $null; $currentChannel = $null; $currentBand = ''
-        } elseif ($s -match '^\s*(Signal|Se[nñ]al)\s*:\s*(\d+)\s*%') {
+        } elseif ($s -match '^\s*(Signal|Se.{1,2}al|Segnale)\s*:\s*(\d+)\s*%') {
             $currentSignal = [int]$Matches[2]
-        } elseif ($s -match '^\s*(Channel|Canal)\s*:\s*(\d+)') {
+        } elseif ($s -match '^\s*(Channel|Canal|Kanal|Canale)\s*:\s*(\d+)') {
             $currentChannel = [int]$Matches[2]
-        } elseif ($s -match '^\s*(Band|Banda)\s*:\s*(.+)$') {
+        } elseif ($s -match '^\s*(Band|Banda|Bande|Frequenzband)\s*:\s*(.+)$') {
             $currentBand = $Matches[2].Trim()
         }
     }
