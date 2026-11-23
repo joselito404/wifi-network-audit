@@ -39,12 +39,12 @@ A cross-platform, read-only **Agent Skill** and sequential diagnostic toolkit fo
 
 **Workspace-level:**
 ```bash
-git clone https://github.com/your-username/wifi-network-audit.git .agents/skills/wifi-network-audit
+git clone https://github.com/joselito404/wifi-network-audit.git .agents/skills/wifi-network-audit
 ```
 
 **Global (user-level):**
 ```bash
-git clone https://github.com/your-username/wifi-network-audit.git ~/.gemini/antigravity/skills/wifi-network-audit
+git clone https://github.com/joselito404/wifi-network-audit.git ~/.gemini/antigravity/skills/wifi-network-audit
 ```
 
 Then ask your agent: *"Audit my Wi-Fi connection and find why my ping spikes."*
@@ -55,12 +55,12 @@ Then ask your agent: *"Audit my Wi-Fi connection and find why my ping spikes."*
 
 **Project-level:**
 ```bash
-git clone https://github.com/your-username/wifi-network-audit.git .claude/skills/wifi-network-audit
+git clone https://github.com/joselito404/wifi-network-audit.git .claude/skills/wifi-network-audit
 ```
 
 **Global (user-level):**
 ```bash
-git clone https://github.com/your-username/wifi-network-audit.git ~/.claude/skills/wifi-network-audit
+git clone https://github.com/joselito404/wifi-network-audit.git ~/.claude/skills/wifi-network-audit
 ```
 
 Then ask Claude Code: *"Run a Wi-Fi network audit and help me optimize my router."*
@@ -71,12 +71,12 @@ Then ask Claude Code: *"Run a Wi-Fi network audit and help me optimize my router
 
 **Project-level:**
 ```bash
-git clone https://github.com/your-username/wifi-network-audit.git .codex/skills/wifi-network-audit
+git clone https://github.com/joselito404/wifi-network-audit.git .codex/skills/wifi-network-audit
 ```
 
 **Global (user-level):**
 ```bash
-git clone https://github.com/your-username/wifi-network-audit.git ~/.codex/skills/wifi-network-audit
+git clone https://github.com/joselito404/wifi-network-audit.git ~/.codex/skills/wifi-network-audit
 ```
 
 Then ask Codex: *"Use the wifi-network-audit skill to diagnose my slow Wi-Fi."*
