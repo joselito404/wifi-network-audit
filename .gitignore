@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
+
+# OS artifacts
+.DS_Store
+Thumbs.db
+
+# Generated audit reports (keep examples/ tracked)
+reports/*.json
+reports/*.md
